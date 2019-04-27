@@ -5,6 +5,9 @@
 import tensorflow as tf
 import utils
 
+import pdb
+import os
+
 FLAGS = utils.FLAGS
 num_classes = utils.num_classes
 
@@ -13,11 +16,11 @@ class LSTMOCR(object):
     def __init__(self, mode):
         self.mode = mode
         # image
-        self.inputs = tf.placeholder(tf.float32, [None, FLAGS.image_height, FLAGS.image_width, FLAGS.image_channel])
+        self.inputs = tf.placeholder(tf.float32, [None, FLAGS.image_height, None, 1])
         # SparseTensor required by ctc_loss op
         self.labels = tf.sparse_placeholder(tf.int32)
         # 1d array of size [batch_size]
-        # self.seq_len = tf.placeholder(tf.int32, [None])
+        self.seq_len = tf.placeholder(tf.int32, [None])
         # l2
         self._extra_train_ops = []
 
@@ -32,14 +35,14 @@ class LSTMOCR(object):
         strides = [1, 2]
 
         feature_h = FLAGS.image_height
-        feature_w = FLAGS.image_width
+        # feature_w = FLAGS.image_width
 
         count_ = 0
-        min_size = min(FLAGS.image_height, FLAGS.image_width)
-        while min_size > 1:
-            min_size = (min_size + 1) // 2
-            count_ += 1
-        assert (FLAGS.cnn_count <= count_, "FLAGS.cnn_count should be <= {}!".format(count_))
+        # min_size = min(FLAGS.image_height, FLAGS.image_width)
+        # while min_size > 1:
+        #     min_size = (min_size + 1) // 2
+        #     count_ += 1
+        # assert (FLAGS.cnn_count <= count_, "FLAGS.cnn_count should be <= {}!".format(count_))
 
         # CNN part
         with tf.variable_scope('cnn'):
@@ -54,14 +57,16 @@ class LSTMOCR(object):
                     # print('----x.get_shape().as_list(): {}'.format(x.get_shape().as_list()))
                     _, feature_h, feature_w, _ = x.get_shape().as_list()
             print('\nfeature_h: {}, feature_w: {}'.format(feature_h, feature_w))
+        length = tf.cast(tf.reduce_max(self.seq_len)/16, tf.int32)
+        self.seq_len_0 = tf.cast(self.seq_len/16, tf.int32)
 
         # LSTM part
         with tf.variable_scope('lstm'):
             x = tf.transpose(x, [0, 2, 1, 3])  # [batch_size, feature_w, feature_h, FLAGS.out_channels]
             # treat `feature_w` as max_timestep in lstm.
-            x = tf.reshape(x, [FLAGS.batch_size, feature_w, feature_h * FLAGS.out_channels])
+            x = tf.reshape(x, [FLAGS.batch_size, -1, feature_h * FLAGS.out_channels])
             print('lstm input shape: {}'.format(x.get_shape().as_list()))
-            self.seq_len = tf.fill([x.get_shape().as_list()[0]], feature_w)
+            # self.seq_len = tf.fill([x.get_shape().as_list()[0]], feature_w)
             # print('self.seq_len.shape: {}'.format(self.seq_len.shape.as_list()))
 
             # tf.nn.rnn_cell.RNNCell, tf.nn.rnn_cell.GRUCell
@@ -81,7 +86,7 @@ class LSTMOCR(object):
             outputs, _ = tf.nn.dynamic_rnn(
                 cell=stack,
                 inputs=x,
-                sequence_length=self.seq_len,
+                sequence_length=self.seq_len_0,
                 initial_state=initial_state,
                 dtype=tf.float32,
                 time_major=False
@@ -112,7 +117,8 @@ class LSTMOCR(object):
 
         self.loss = tf.nn.ctc_loss(labels=self.labels,
                                    inputs=self.logits,
-                                   sequence_length=self.seq_len)
+                                   ignore_longer_outpus_than_inputs=True,
+                                   sequence_length=self.seq_len_0)
         self.cost = tf.reduce_mean(self.loss)
         tf.summary.scalar('cost', self.cost)
 
@@ -141,7 +147,7 @@ class LSTMOCR(object):
         # (it's slower but you'll get better results)
         self.decoded, self.log_prob = \
             tf.nn.ctc_beam_search_decoder(self.logits,
-                                          self.seq_len,
+                                          self.seq_len_0,
                                           merge_repeated=False)
         # self.decoded, self.log_prob = tf.nn.ctc_greedy_decoder(logits, seq_len,merge_repeated=False)
         self.dense_decoded = tf.sparse_tensor_to_dense(self.decoded[0], default_value=-1)

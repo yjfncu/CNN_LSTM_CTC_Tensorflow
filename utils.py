@@ -8,7 +8,7 @@ import tensorflow as tf
 import cv2
 
 # +-* + () + 10 digit + blank + space
-num_classes = 3 + 2 + 10 + 1 + 1
+# num_classes = 3 + 2 + 10 + 1 + 1
 
 maxPrintLen = 100
 
@@ -17,7 +17,7 @@ tf.app.flags.DEFINE_string('checkpoint_dir', './checkpoint/', 'the checkpoint di
 tf.app.flags.DEFINE_float('initial_learning_rate', 1e-3, 'inital lr')
 
 tf.app.flags.DEFINE_integer('image_height', 60, 'image height')
-tf.app.flags.DEFINE_integer('image_width', 180, 'image width')
+# tf.app.flags.DEFINE_integer('image_width', 180, 'image width')
 tf.app.flags.DEFINE_integer('image_channel', 1, 'image channels as input')
 
 tf.app.flags.DEFINE_integer('cnn_count', 4, 'count of cnn module to extract image features.')
@@ -48,66 +48,78 @@ FLAGS = tf.app.flags.FLAGS
 
 # num_batches_per_epoch = int(num_train_samples/FLAGS.batch_size)
 
-charset = '0123456789+-*()'
-encode_maps = {}
-decode_maps = {}
-for i, char in enumerate(charset, 1):
-    encode_maps[char] = i
-    decode_maps[i] = char
+# charset = '0123456789+-*()'
+encode_maps = []
+# decode_maps = []
 
-SPACE_INDEX = 0
-SPACE_TOKEN = ''
-encode_maps[SPACE_TOKEN] = SPACE_INDEX
-decode_maps[SPACE_INDEX] = SPACE_TOKEN
+with open('charset.txt', 'r', encding='utf-8') as f:
+    content = f.readlines()
+for idx, char in enumerate(content):
+    encode_maps.append(char.strip('\n').strip(""))
+
+def text2label(label):
+    text = []
+    for idx in label:
+        text.append(encode_maps.index(idx))
+    return text
+
+def label2text(labels):
+    pre_str = []
+    for i in labels:
+        if i == -1:
+            pre_str.append('')
+        else:
+            pre_str.append(encode_maps[i])
+    return ''.join(pre_str).strip('')
+
+
+num_classes = len(encode_maps) + 1
+
+# SPACE_INDEX = 0
+# SPACE_TOKEN = ''
+# encode_maps[SPACE_TOKEN] = SPACE_INDEX
+# decode_maps[SPACE_INDEX] = SPACE_TOKEN
 
 
 class DataIterator:
     def __init__(self, data_dir):
         self.image = []
-        self.labels = []
-        for root, sub_folder, file_list in os.walk(data_dir):
-            for file_path in file_list:
-                image_name = os.path.join(root, file_path)
-                im = cv2.imread(image_name, cv2.IMREAD_GRAYSCALE).astype(np.float32) / 255.
-                # resize to same height, different width will consume time on padding
-                # im = cv2.resize(im, (image_width, image_height))
-                im = np.reshape(im, [FLAGS.image_height, FLAGS.image_width, FLAGS.image_channel])
-                self.image.append(im)
+        self.train_data = data_dir
 
-                # image is named as /.../<folder>/00000_abcd.png
-                code = image_name.split('/')[-1].split('_')[1].split('.')[0]
-                code = [SPACE_INDEX if code == SPACE_TOKEN else encode_maps[c] for c in list(code)]
-                self.labels.append(code)
+    def get_batchsize_data(self, iter_step):
+        batch_img = []
+        batch_label = []
+        for i in range(FLAGS.batch_size):
+            im = cv2.imread(self.train_data[FLAGS.batch_size*iter_step+_], 0).astype(np.float32) / 255.0
+            scale = FLAGS.image_height / im.shape[0]
+            im_resized = cv2.resize(im, None, fx=scale, fy=scale)
+            im_resized = np.expand_dims(im_resized, 2)
+            batch_img.append(im_resized)
 
-    @property
-    def size(self):
-        return len(self.labels)
+            with open(self.train_data[FLAGS.batch_size*iter_step+_][0:-3]+'txt', 'r', encoding='utf-8') as f:
+                content = f.readlines()[0]
+            label = text2label(content.strip('\n').strip(''))
+            batch_label.append(label)
+            f.close()
+        assert len(batch_img) == len(batch_label), 'train or val data batch len not equal'
+        max_width = max([e.shape[1] for e in batch_img])
+        result_img = np.zeros((len(batch_img), batch_img[0].shape[0], max_width, 1))
+        for idx, item in enumerate(batch_img):
+            result_img[idx, 0:item.shape[1]] = item
+        maxlen = max([len(e) for e in batch_label])
+        result_img_lenght = [e.shape[1] for e in batch_img]
+        batch_labels = sparse_tuple_from_label(batch_label)
 
-    def the_label(self, indexs):
-        labels = []
-        for i in indexs:
-            labels.append(self.labels[i])
+        return result_img, np.asarray(result_img_lenght, dtype=np.int32), batch_labels
 
-        return labels
-
-    def input_index_generate_batch(self, index=None):
-        if index:
-            image_batch = [self.image[i] for i in index]
-            label_batch = [self.labels[i] for i in index]
-        else:
-            image_batch = self.image
-            label_batch = self.labels
-
-        def get_input_lens(sequences):
-            # 64 is the output channels of the last layer of CNN
-            lengths = np.asarray([FLAGS.out_channels for _ in sequences], dtype=np.int64)
-
-            return sequences, lengths
-
-        batch_inputs, batch_seq_len = get_input_lens(np.array(image_batch))
-        batch_labels = sparse_tuple_from_label(label_batch)
-
-        return batch_inputs, batch_seq_len, batch_labels
+    def get_val_label(self, iter_step):
+        batch_label_eval = []
+        for _ in range(FLAGS.batch_size):
+            with open(self.train_data[FLAGS.batch_size*iter_step+_][0:-3]+'txt', 'r', encoding='utf-8') as f:
+                content = f.readlines()[0]
+            batch_label_eval.append(content.strip('\n').strip(''))
+            f.close()
+        return batch_label_eval
 
 
 def accuracy_calculation(original_seq, decoded_seq, ignore_value=-1, isPrint=False):
