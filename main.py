@@ -6,11 +6,10 @@ import datetime
 import logging
 import os
 import time
-
 import cv2
 import numpy as np
 import tensorflow as tf
-
+import shutil
 import cnn_lstm_otc_ocr
 import utils
 import helper
