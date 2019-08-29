@@ -25,10 +25,10 @@ tf.app.flags.DEFINE_integer('out_channels', 64, 'output channels of last layer i
 tf.app.flags.DEFINE_integer('num_hidden', 128, 'number of hidden units in lstm')
 tf.app.flags.DEFINE_float('output_keep_prob', 0.8, 'output_keep_prob in lstm')
 tf.app.flags.DEFINE_integer('num_epochs', 10000, 'maximum epochs')
-tf.app.flags.DEFINE_integer('batch_size', 40, 'the batch_size')
+tf.app.flags.DEFINE_integer('batch_size', 32, 'the batch_size')
 tf.app.flags.DEFINE_integer('save_steps', 1000, 'the step to save checkpoint')
 tf.app.flags.DEFINE_float('leakiness', 0.01, 'leakiness of lrelu')
-tf.app.flags.DEFINE_integer('validation_steps', 500, 'the step to validation')
+tf.app.flags.DEFINE_integer('validation_steps', 5, 'the step to validation')
 
 tf.app.flags.DEFINE_float('decay_rate', 0.98, 'the lr decay rate')
 tf.app.flags.DEFINE_float('beta1', 0.9, 'parameter of adam optimizer beta1')
@@ -85,11 +85,12 @@ class DataIterator:
     def __init__(self, data_dir):
         self.image = []
         self.train_data = data_dir
+        self.total_size = len(self.train_data)
 
     def get_batchsize_data(self, iter_step):
         batch_img = []
         batch_label = []
-        for i in range(FLAGS.batch_size):
+        for _ in range(FLAGS.batch_size):
             im = cv2.imread(self.train_data[FLAGS.batch_size*iter_step+_], 0).astype(np.float32) / 255.0
             scale = FLAGS.image_height / im.shape[0]
             im_resized = cv2.resize(im, None, fx=scale, fy=scale)
@@ -105,7 +106,7 @@ class DataIterator:
         max_width = max([e.shape[1] for e in batch_img])
         result_img = np.zeros((len(batch_img), batch_img[0].shape[0], max_width, 1))
         for idx, item in enumerate(batch_img):
-            result_img[idx, 0:item.shape[1]] = item
+            result_img[idx, :, 0:item.shape[1]] = item
         maxlen = max([len(e) for e in batch_label])
         result_img_lenght = [e.shape[1] for e in batch_img]
         batch_labels = sparse_tuple_from_label(batch_label)

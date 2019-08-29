@@ -14,30 +14,40 @@ import cnn_lstm_otc_ocr
 import utils
 import helper
 
+
+
+os.environ[“CUDA_VISIBLE_DEVICES”] = “0”
 FLAGS = utils.FLAGS
 
 logger = logging.getLogger('Traing for OCR using CNN+LSTM+CTC')
 logger.setLevel(logging.INFO)
 
 
-def train(train_dir=None, val_dir=None, mode='train'):
+def train(train_dir=None, mode='train'):
     model = cnn_lstm_otc_ocr.LSTMOCR(mode)
     model.build_graph()
 
+    label_files = [os.pat.join(train_dir, e) for e in os.listdir(train_dir) if e.endswith('.txt') and os.path.exists(os.path.join(train_dir, e.replace('.txt', '.jpg')))]
+    train_num = int(len(label_files) * 0.8)
+    test_num = len(label_files) - train_num
+
+    print('total num', len(label_files), 'train num', train_num, 'test num', test_num)
+    train_imgs = label_files[0:train_num]
+    test_imgs = label_files[train_num:]
+
+
     print('loading train data')
-    train_feeder = utils.DataIterator(data_dir=train_dir)
-    print('size: ', train_feeder.size)
+    train_feeder = utils.DataIterator(data_dir=train_imgs)
+    
 
     print('loading validation data')
-    val_feeder = utils.DataIterator(data_dir=val_dir)
-    print('size: {}\n'.format(val_feeder.size))
+    val_feeder = utils.DataIterator(data_dir=test_imgs)
+   
 
-    num_train_samples = train_feeder.size  # 100000
-    num_batches_per_epoch = int(num_train_samples / FLAGS.batch_size)  # example: 100000/100
+    num_batches_per_epoch_train = int(train_num / FLAGS.batch_size)  # example: 100000/100
 
-    num_val_samples = val_feeder.size
-    num_batches_per_epoch_val = int(num_val_samples / FLAGS.batch_size)  # example: 10000/100
-    shuffle_idx_val = np.random.permutation(num_val_samples)
+    num_batches_per_epoch_val = int(test_num / FLAGS.batch_size)  # example: 10000/100
+   
 
     config = tf.ConfigProto(allow_soft_placement=True)
     config.gpu_options.allow_growth = True
@@ -55,23 +65,25 @@ def train(train_dir=None, val_dir=None, mode='train'):
 
         print('=============================begin training=============================')
         for cur_epoch in range(FLAGS.num_epochs):
-            shuffle_idx = np.random.permutation(num_train_samples)
+            
             train_cost = 0
             start_time = time.time()
             batch_time = time.time()
+            if cur_epoch == 0:
+                random.shuffle(train_feeder.train_data)
 
             # the training part
-            for cur_batch in range(num_batches_per_epoch):
+            for cur_batch in range(num_batches_per_epoch_train):
                 if (cur_batch + 1) % 100 == 0:
                     print('batch', cur_batch, ': time', time.time() - batch_time)
                 batch_time = time.time()
-                indexs = [shuffle_idx[i % num_train_samples] for i in
-                          range(cur_batch * FLAGS.batch_size, (cur_batch + 1) * FLAGS.batch_size)]
-                batch_inputs, _, batch_labels = \
-                    train_feeder.input_index_generate_batch(indexs)
-                # batch_inputs,batch_seq_len,batch_labels=utils.gen_batch(FLAGS.batch_size)
+                
+                batch_inputs, result_img_length, batch_labels = \
+                    train_feeder.get_batchsize_data(cur_batch)
+               
                 feed = {model.inputs: batch_inputs,
-                        model.labels: batch_labels}
+                        model.labels: batch_labels,
+                        model.seq_len: result_img_length}
 
                 # if summary is needed
                 summary_str, batch_cost, step, _ = \
@@ -94,25 +106,29 @@ def train(train_dir=None, val_dir=None, mode='train'):
                     acc_batch_total = 0
                     lastbatch_err = 0
                     lr = 0
-                    for j in range(num_batches_per_epoch_val):
-                        indexs_val = [shuffle_idx_val[i % num_val_samples] for i in
-                                      range(j * FLAGS.batch_size, (j + 1) * FLAGS.batch_size)]
-                        val_inputs, _, val_labels = \
-                            val_feeder.input_index_generate_batch(indexs_val)
-                        val_feed = {model.inputs: val_inputs,
-                                    model.labels: val_labels}
+                    for val_j in range(num_batches_per_epoch_val):
+                        result_img_val, seq_len_input_val, batch_label_val = \
+                            val_feeder.get_batchsize_data(val_j)
+                        val_feed = {model.inputs: result_img_val,
+                                    model.labels: batch_label_val,
+                                    model.seq_len: seq_len_input_val}
 
                         dense_decoded, lastbatch_err, lr = \
                             sess.run([model.dense_decoded, model.cost, model.lrn_rate],
                                      val_feed)
 
                         # print the decode result
-                        ori_labels = val_feeder.the_label(indexs_val)
-                        acc = utils.accuracy_calculation(ori_labels, dense_decoded,
+                        val_pre_list = []
+                        for decode_code in dense_decoded:
+                            pred_strings = utils.label2text(decode_code)
+                            val_pre_list.append(pred_strings)
+                        ori_labels = val_feeder.get_val_label(val_j)
+
+                        acc = utils.accuracy_calculation(ori_labels, val_pre_list,
                                                          ignore_value=-1, isPrint=True)
                         acc_batch_total += acc
 
-                    accuracy = (acc_batch_total * FLAGS.batch_size) / num_val_samples
+                    accuracy = acc_batch_total / num_batches_per_epoch_val
 
                     avg_train_cost = train_cost / ((cur_batch + 1) * FLAGS.batch_size)
 
@@ -127,7 +143,7 @@ def train(train_dir=None, val_dir=None, mode='train'):
 
 
 def infer(img_path, mode='infer'):
-    # imgList = load_img_path('/home/yang/Downloads/FILE/ml/imgs/image_contest_level_1_validate/')
+    imgList = load_img_path('/home/yang/Downloads/FILE/ml/imgs/image_contest_level_1_validate/')
     imgList = helper.load_img_path(img_path)
     print(imgList[:5])
 
@@ -190,21 +206,15 @@ def infer(img_path, mode='infer'):
 
 
 def main(_):
-    if FLAGS.num_gpus == 0:
-        dev = '/cpu:0'
-    elif FLAGS.num_gpus == 1:
-        dev = '/gpu:0'
-    else:
-        raise ValueError('Only support 0 or 1 gpu.')
 
-    with tf.device(dev):
-        if FLAGS.mode == 'train':
-            train(FLAGS.train_dir, FLAGS.val_dir, FLAGS.mode)
-
-        elif FLAGS.mode == 'infer':
-            infer(FLAGS.infer_dir, FLAGS.mode)
-
+    train(FLAGS.train_dir, FLAGS.mode)
 
 if __name__ == '__main__':
     tf.logging.set_verbosity(tf.logging.INFO)
     tf.app.run()
+
+# python main.py --train_dir ../img --image_height=30 --restore --batch_size=64 --log_dir=./log/aa --mode=train
+
+
+
+
